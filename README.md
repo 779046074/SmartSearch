@@ -1,3 +1,367 @@
-# AndroidSearchView
-Android搜索功能，支持本地保存搜索历史记录及实时模糊查询。  
-博客地址：http://blog.csdn.net/leoleohan/article/details/50688283
+同事负责开发的APP有一个搜索功能，并且需要显示搜索的历史记录，我闲暇之余帮她开发了这个功能，现把该页面抽取成一个demo分享给大家。
+
+**实现效果如图所示：**
+![这里写图片描述](http://img.blog.csdn.net/20160218195147234)
+
+**本案例实现起来很简单，所以可以直接拿来嵌入项目中使用，涉及到的知识点：**
+- **数据库的增删改查操作**
+- **ListView和ScrollView的嵌套冲突解决**
+- **监听软键盘回车按钮设置为搜索按钮**
+- **使用TextWatcher( )实时筛选**
+- **已搜索的关键字再次搜索不重复添加到数据库**
+- **刚进入页面设置软键盘不因为EditText而自动弹出**
+
+
+-------------------
+**代码**
+
+ 1. RecordSQLiteOpenHelper.java
+ 
+
+```
+package com.cwvs.microlife;
+
+import android.content.Context;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteOpenHelper;
+
+public class RecordSQLiteOpenHelper extends SQLiteOpenHelper {
+
+    private static String name = "temp.db";
+    private static Integer version = 1;
+
+    public RecordSQLiteOpenHelper(Context context) {
+        super(context, name, null, version);
+    }
+
+    @Override
+    public void onCreate(SQLiteDatabase db) {
+        db.execSQL("create table records(id integer primary key autoincrement,name varchar(200))");
+    }
+
+    @Override
+    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+
+    }
+
+
+}
+```
+
+ 2. MainActivity.java
+ 
+
+```
+package com.cwvs.microlife;
+
+import java.util.Date;
+
+import android.app.Activity;
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.graphics.drawable.Drawable;
+import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.Window;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.AdapterView;
+import android.widget.BaseAdapter;
+import android.widget.CursorAdapter;
+import android.widget.EditText;
+import android.widget.SimpleCursorAdapter;
+import android.widget.TextView;
+import android.widget.Toast;
+
+public class MainActivity extends Activity {
+
+	private EditText et_search;
+	private TextView tv_tip;
+	private MyListView listView;
+	private TextView tv_clear;
+	private RecordSQLiteOpenHelper helper = new RecordSQLiteOpenHelper(this);;
+	private SQLiteDatabase db;
+	private BaseAdapter adapter;
+
+	@Override
+	protected void onCreate(Bundle savedInstanceState) {
+		super.onCreate(savedInstanceState);
+		requestWindowFeature(Window.FEATURE_NO_TITLE);
+		setContentView(R.layout.activity_main);
+		// 初始化控件
+		initView();
+
+		// 清空搜索历史
+		tv_clear.setOnClickListener(new View.OnClickListener() {
+			@Override
+			public void onClick(View v) {
+				deleteData();
+				queryData("");
+			}
+		});
+
+		// 搜索框的键盘搜索键点击回调
+		et_search.setOnKeyListener(new View.OnKeyListener() {// 输入完后按键盘上的搜索键
+
+			public boolean onKey(View v, int keyCode, KeyEvent event) {
+				if (keyCode == KeyEvent.KEYCODE_ENTER && event.getAction() == KeyEvent.ACTION_DOWN) {// 修改回车键功能
+					// 先隐藏键盘
+					((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(
+							getCurrentFocus().getWindowToken(), InputMethodManager.HIDE_NOT_ALWAYS);
+					// 按完搜索键后将当前查询的关键字保存起来,如果该关键字已经存在就不执行保存
+					boolean hasData = hasData(et_search.getText().toString().trim());
+					if (!hasData) {
+						insertData(et_search.getText().toString().trim());
+						queryData("");
+					}
+					// TODO 根据输入的内容模糊查询商品，并跳转到另一个界面，由你自己去实现
+					Toast.makeText(MainActivity.this, "clicked!", Toast.LENGTH_SHORT).show();
+
+				}
+				return false;
+			}
+		});
+
+		// 搜索框的文本变化实时监听
+		et_search.addTextChangedListener(new TextWatcher() {
+			@Override
+			public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+
+			}
+
+			@Override
+			public void onTextChanged(CharSequence s, int start, int before, int count) {
+
+			}
+
+			@Override
+			public void afterTextChanged(Editable s) {
+				if (s.toString().trim().length() == 0) {
+					tv_tip.setText("搜索历史");
+				} else {
+					tv_tip.setText("搜索结果");
+				}
+				String tempName = et_search.getText().toString();
+				// 根据tempName去模糊查询数据库中有没有数据
+				queryData(tempName);
+
+			}
+		});
+
+		listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+			@Override
+			public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+				TextView textView = (TextView) view.findViewById(android.R.id.text1);
+				String name = textView.getText().toString();
+				et_search.setText(name);
+				Toast.makeText(MainActivity.this, name, Toast.LENGTH_SHORT).show();
+				// TODO 获取到item上面的文字，根据该关键字跳转到另一个页面查询，由你自己去实现
+			}
+		});
+
+		// 插入数据，便于测试，否则第一次进入没有数据怎么测试呀？
+		Date date = new Date();
+		long time = date.getTime();
+		insertData("Leo" + time);
+
+		// 第一次进入查询所有的历史记录
+		queryData("");
+	}
+
+	/**
+	 * 插入数据
+	 */
+	private void insertData(String tempName) {
+		db = helper.getWritableDatabase();
+		db.execSQL("insert into records(name) values('" + tempName + "')");
+		db.close();
+	}
+
+	/**
+	 * 模糊查询数据
+	 */
+	private void queryData(String tempName) {
+		Cursor cursor = helper.getReadableDatabase().rawQuery(
+				"select id as _id,name from records where name like '%" + tempName + "%' order by id desc ", null);
+		// 创建adapter适配器对象
+		adapter = new SimpleCursorAdapter(this, android.R.layout.simple_list_item_1, cursor, new String[] { "name" },
+				new int[] { android.R.id.text1 }, CursorAdapter.FLAG_REGISTER_CONTENT_OBSERVER);
+		// 设置适配器
+		listView.setAdapter(adapter);
+		adapter.notifyDataSetChanged();
+	}
+	/**
+	 * 检查数据库中是否已经有该条记录
+	 */
+	private boolean hasData(String tempName) {
+		Cursor cursor = helper.getReadableDatabase().rawQuery(
+				"select id as _id,name from records where name =?", new String[]{tempName});
+		//判断是否有下一个
+		return cursor.moveToNext();
+	}
+
+	/**
+	 * 清空数据
+	 */
+	private void deleteData() {
+		db = helper.getWritableDatabase();
+		db.execSQL("delete from records");
+		db.close();
+	}
+
+	private void initView() {
+		et_search = (EditText) findViewById(R.id.et_search);
+		tv_tip = (TextView) findViewById(R.id.tv_tip);
+		listView = (com.cwvs.microlife.MyListView) findViewById(R.id.listView);
+		tv_clear = (TextView) findViewById(R.id.tv_clear);
+
+		// 调整EditText左边的搜索按钮的大小
+		Drawable drawable = getResources().getDrawable(R.drawable.search);
+		drawable.setBounds(0, 0, 60, 60);// 第一0是距左边距离，第二0是距上边距离，60分别是长宽
+		et_search.setCompoundDrawables(drawable, null, null, null);// 只放左边
+	}
+}
+
+```
+
+ 3. MyListView.java
+ 
+
+```
+package com.cwvs.microlife;
+
+import android.content.Context;
+import android.util.AttributeSet;
+import android.widget.ListView;
+
+public class MyListView extends ListView {
+	public MyListView(Context context) {
+		super(context);
+	}
+
+	public MyListView(Context context, AttributeSet attrs) {
+		super(context, attrs);
+	}
+
+	public MyListView(Context context, AttributeSet attrs, int defStyle) {
+		super(context, attrs, defStyle);
+	}
+
+	@Override
+	protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+		int expandSpec = MeasureSpec.makeMeasureSpec(Integer.MAX_VALUE >> 2,
+				MeasureSpec.AT_MOST);
+		super.onMeasure(widthMeasureSpec, expandSpec);
+	}
+
+}
+
+```
+
+ 4. activity_main.xml
+ 
+
+```
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:focusableInTouchMode="true"
+    android:orientation="vertical"
+    tools:context="${relativePackage}.${activityClass}">
+
+    <LinearLayout
+        android:layout_width="fill_parent"
+        android:layout_height="50dp"
+        android:background="#E54141"
+        android:orientation="horizontal"
+        android:paddingRight="16dp">
+
+        <ImageView
+            android:layout_width="45dp"
+            android:layout_height="45dp"
+            android:layout_gravity="center_vertical"
+            android:padding="10dp"
+            android:src="@drawable/back" />
+
+        <EditText
+            android:id="@+id/et_search"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="@null"
+            android:drawableLeft="@drawable/search"
+            android:drawablePadding="8dp"
+            android:gravity="start|center_vertical"
+            android:hint="输入查询的关键字"
+            android:imeOptions="actionSearch"
+            android:singleLine="true"
+            android:textColor="@android:color/white"
+            android:textSize="16sp" />
+
+    </LinearLayout>
+
+
+    <ScrollView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingLeft="20dp"
+
+                >
+
+                <TextView
+                    android:id="@+id/tv_tip"
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:gravity="left|center_vertical"
+                    android:text="搜索历史" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="#EEEEEE"></View>
+
+                <com.cwvs.microlife.MyListView
+                    android:id="@+id/listView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"></com.cwvs.microlife.MyListView>
+
+
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#EEEEEE"></View>
+
+            <TextView
+                android:id="@+id/tv_clear"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:background="#F6F6F6"
+                android:gravity="center"
+                android:text="清除搜索历史" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginBottom="20dp"
+                android:background="#EEEEEE"></View>
+        </LinearLayout>
+
+    </ScrollView>
+</LinearLayout>
+```
